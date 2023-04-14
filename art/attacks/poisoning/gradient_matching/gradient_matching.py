@@ -27,8 +27,6 @@ from typing import Any, Dict, Tuple, TYPE_CHECKING, List
 import numpy as np
 from tqdm.auto import trange, tqdm
 
-from art.estimators import BaseEstimator, NeuralNetworkMixin
-from art.estimators.classification.classifier import ClassifierMixin
 from art.estimators.classification.pytorch import PyTorchClassifier
 from art.estimators.classification.tensorflow import TensorFlowV2Classifier
 
@@ -43,18 +41,6 @@ class GradientMatchingMixin(ABC):
     """
     Mixin abstract base class defining functionality for gradient matching attacks.
     """
-
-    attack_params = [
-        "classifier",
-        "epsilon",
-        "max_epochs",
-        "learning_rate_schedule",
-        "clip_values",
-        "batch_size",
-        "verbose",
-    ]
-
-    _estimator_requirements = (BaseEstimator, NeuralNetworkMixin, ClassifierMixin)
 
     def __init__(
         self,

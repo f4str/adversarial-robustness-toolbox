@@ -50,9 +50,9 @@ Feature Collision Attack
    :members:
    :special-members:
 
-Gradient Matching Attack
+Witches' Brew Attack
 ------------------------
-.. autoclass:: GradientMatchingAttack
+.. autoclass:: WitchesBrewAttack
    :members:
    :special-members:
 
