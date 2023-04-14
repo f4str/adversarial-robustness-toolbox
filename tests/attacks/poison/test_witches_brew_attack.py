@@ -21,7 +21,7 @@ import logging
 import numpy as np
 import pytest
 
-from art.attacks.poisoning import GradientMatchingAttack
+from art.attacks.poisoning import WitchesBrewAttack
 
 from tests.utils import ARTTestException
 
@@ -43,7 +43,7 @@ def test_poison(art_warning, get_default_mnist_subset, image_dl_estimator):
 
         x_train, y_train = x_train[:1000], y_train[:1000]
         y_train = np.argmax(y_train, axis=-1)
-        attack = GradientMatchingAttack(
+        attack = WitchesBrewAttack(
             classifier, epsilon=epsilon, percent_poison=percent_poison, max_trials=1, max_epochs=1, verbose=False
         )
 
@@ -68,21 +68,21 @@ def test_check_params(art_warning, get_default_mnist_subset, image_dl_estimator)
         classifier, _ = image_dl_estimator(functional=True)
 
         with pytest.raises(ValueError):
-            _ = GradientMatchingAttack(classifier, percent_poison=0.01, learning_rate_schedule=[0.1, 0.2, 0.3])
+            _ = WitchesBrewAttack(classifier, percent_poison=0.01, learning_rate_schedule=[0.1, 0.2, 0.3])
         with pytest.raises(ValueError):
-            _ = GradientMatchingAttack(classifier, percent_poison=1.2)
+            _ = WitchesBrewAttack(classifier, percent_poison=1.2)
         with pytest.raises(ValueError):
-            _ = GradientMatchingAttack(classifier, percent_poison=0.01, max_epochs=0)
+            _ = WitchesBrewAttack(classifier, percent_poison=0.01, max_epochs=0)
         with pytest.raises(ValueError):
-            _ = GradientMatchingAttack(classifier, percent_poison=0.01, max_trials=0)
+            _ = WitchesBrewAttack(classifier, percent_poison=0.01, max_trials=0)
         with pytest.raises(ValueError):
-            _ = GradientMatchingAttack(classifier, percent_poison=0.01, clip_values=1)
+            _ = WitchesBrewAttack(classifier, percent_poison=0.01, clip_values=1)
         with pytest.raises(ValueError):
-            _ = GradientMatchingAttack(classifier, percent_poison=0.01, epsilon=-1)
+            _ = WitchesBrewAttack(classifier, percent_poison=0.01, epsilon=-1)
         with pytest.raises(ValueError):
-            _ = GradientMatchingAttack(classifier, percent_poison=0.01, batch_size=0)
+            _ = WitchesBrewAttack(classifier, percent_poison=0.01, batch_size=0)
         with pytest.raises(ValueError):
-            _ = GradientMatchingAttack(classifier, percent_poison=0.01, verbose=1.1)
+            _ = WitchesBrewAttack(classifier, percent_poison=0.01, verbose=1.1)
 
     except ARTTestException as e:
         art_warning(e)

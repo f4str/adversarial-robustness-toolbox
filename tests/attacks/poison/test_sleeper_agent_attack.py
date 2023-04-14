@@ -22,7 +22,8 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from art.attacks.poisoning.sleeper_agent_attack import SleeperAgentAttack
+from art.attacks.poisoning import SleeperAgentAttack
+
 from tests.utils import ARTTestException
 
 logger = logging.getLogger(__name__)

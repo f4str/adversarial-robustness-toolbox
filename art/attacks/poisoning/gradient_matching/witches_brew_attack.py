@@ -16,7 +16,7 @@
 # TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 """
-This module implements Gradient Matching clean-label attacks (a.k.a. Witches' Brew) on Neural Networks.
+This module implements Witches' Brew clean-label attack on Neural Networks.
 
 | Paper link: https://arxiv.org/abs/2009.02276
 """
@@ -39,9 +39,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class GradientMatchingAttack(Attack):
+class WitchesBrewAttack(Attack):
     """
-    Implementation of Gradient Matching Attack by Geiping, et. al. 2020.
+    Implementation of Witches' Brew Attack by Geiping, et. al. 2020.
     "Witches' Brew: Industrial Scale Data Poisoning via Gradient Matching"
 
     | Paper link: https://arxiv.org/abs/2009.02276
@@ -124,7 +124,7 @@ class GradientMatchingAttack(Attack):
             initializer = self._initialize_poison_pytorch
         else:
             raise NotImplementedError(
-                "GradientMatchingAttack is currently implemented only for Tensorflow V2 and Pytorch."
+                "WitchesBrewAttack is currently implemented only for Tensorflow V2 and Pytorch."
             )
 
         return initializer(x_trigger, y_trigger, x_poison, y_poison)
@@ -312,7 +312,7 @@ class GradientMatchingAttack(Attack):
 
             def __init__(
                 self,
-                gradient_matching: GradientMatchingAttack,
+                gradient_matching: WitchesBrewAttack,
                 classifier: PyTorchClassifier,
                 epsilon: float,
                 num_poison: int,
@@ -405,7 +405,7 @@ class GradientMatchingAttack(Attack):
             finish_poisoning = self._finish_poison_pytorch
         else:
             raise NotImplementedError(
-                "GradientMatchingAttack is currently implemented only for Tensorflow V2 and Pytorch."
+                "WitchesBrewAttack is currently implemented only for Tensorflow V2 and Pytorch."
             )
 
         # Choose samples to poison.
@@ -580,3 +580,7 @@ class GradientMatchingAttack(Attack):
             and not isinstance(self.verbose, bool)
         ):
             raise ValueError("verbose must be nonnegative integer or Boolean")
+
+
+# Type alias for backwards compatibility
+GradientMatchingAttack = WitchesBrewAttack
