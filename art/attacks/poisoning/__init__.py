@@ -18,3 +18,11 @@ from art.attacks.poisoning.gradient_matching.sleeper_agent_attack import Sleeper
 from art.attacks.poisoning.hidden_trigger_backdoor.hidden_trigger_backdoor import HiddenTriggerBackdoor
 from art.attacks.poisoning.hidden_trigger_backdoor.hidden_trigger_backdoor_pytorch import HiddenTriggerBackdoorPyTorch
 from art.attacks.poisoning.hidden_trigger_backdoor.hidden_trigger_backdoor_keras import HiddenTriggerBackdoorKeras
+
+
+# Extra import paths to preserve backwards compatibility
+from art.attacks.poisoning.gradient_matching import witches_brew_attack, sleeper_agent_attack
+import sys
+
+sys.modules["art.attacks.poisoning.gradient_matching_attack"] = witches_brew_attack
+sys.modules["art.attacks.poisoning.sleeper_agent_attack"] = sleeper_agent_attack
