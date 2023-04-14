@@ -45,9 +45,8 @@ def test_poison(art_warning, get_default_mnist_subset, image_dl_estimator, frame
         x_train, y_train = x_train[:1000], y_train[:1000]
         class_source = 0
         class_target = 1
-        K = 1
         x_train_ = np.copy(x_train)
-        index_source = np.where(y_train == class_source)[0][0:K]
+        index_source = np.where(y_train == class_source)[0][0:1]
         index_target = np.where(y_train == class_target)[0]
         x_trigger = x_train_[index_source]
         epsilon = 16 * 255
@@ -99,7 +98,6 @@ def test_check_params(art_warning, get_default_mnist_subset, image_dl_estimator)
                 indices_target=[0],
                 patch=[1],
             )
-
         # Test bad indices
         with pytest.raises(ValueError):
             _ = SleeperAgentAttack(
@@ -109,7 +107,6 @@ def test_check_params(art_warning, get_default_mnist_subset, image_dl_estimator)
                 indices_target=0,
                 patch=np.ones((1, 8, 8)),
             )
-
         # Test bad patching strategy
         with pytest.raises(ValueError):
             _ = SleeperAgentAttack(
@@ -120,7 +117,6 @@ def test_check_params(art_warning, get_default_mnist_subset, image_dl_estimator)
                 patch=np.ones((1, 8, 8)),
                 patching_strategy=1,
             )
-
         # Test bad selection strategy
         with pytest.raises(ValueError):
             _ = SleeperAgentAttack(
@@ -143,7 +139,6 @@ def test_check_params(art_warning, get_default_mnist_subset, image_dl_estimator)
                 class_source=0,
                 class_target=0,
             )
-
         # Test invalid poison percent
         with pytest.raises(ValueError):
             _ = SleeperAgentAttack(

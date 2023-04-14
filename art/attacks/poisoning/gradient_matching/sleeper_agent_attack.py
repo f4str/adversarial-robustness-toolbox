@@ -29,9 +29,12 @@ import random
 import numpy as np
 from tqdm.auto import trange
 
-from art.attacks.poisoning.gradient_matching.witches_brew_attack import WitchesBrewAttack
+from art.attacks.attack import Attack
+from art.attacks.poisoning.gradient_matching.gradient_matching import GradientMatchingMixin
+from art.estimators import BaseEstimator, NeuralNetworkMixin
+from art.estimators.classification.classifier import ClassifierMixin
 from art.estimators.classification.pytorch import PyTorchClassifier
-from art.estimators.classification import TensorFlowV2Classifier
+from art.estimators.classification.tensorflow import TensorFlowV2Classifier
 from art.preprocessing.standardisation_mean_std.pytorch import StandardisationMeanStdPyTorch
 from art.preprocessing.standardisation_mean_std.tensorflow import StandardisationMeanStdTensorFlow
 
@@ -43,12 +46,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SleeperAgentAttack(WitchesBrewAttack):
+class SleeperAgentAttack(GradientMatchingMixin, Attack):
     """
     Implementation of Sleeper Agent Attack
 
-    | Paper link: https://arxiv.org/pdf/2106.08970.pdf
+    | Paper link: https://arxiv.org/abs/2106.08970
     """
+
+    attack_params = Attack.attack_params + [
+        "classifier",
+        "percent_poison",
+        "patch",
+        "indices_target",
+        "epsilon",
+        "max_trials",
+        "max_epochs",
+        "learning_rate_schedule",
+        "batch_size",
+        "clip_values",
+        "verbose",
+        "patching_strategy",
+        "selection_strategy",
+        "retraining_factor",
+        "model_retrain",
+        "model_retraining_epoch",
+        "class_source",
+        "class_target",
+        "retrain_batch_size",
+    ]
+
+    _estimator_requirements = (BaseEstimator, NeuralNetworkMixin, ClassifierMixin)
 
     def __init__(
         self,
@@ -70,7 +97,6 @@ class SleeperAgentAttack(WitchesBrewAttack):
         model_retraining_epoch: int = 1,
         class_source: int = 0,
         class_target: int = 1,
-        device_name: str = "cpu",
         retrain_batch_size: int = 128,
     ):
         """
@@ -107,32 +133,33 @@ class SleeperAgentAttack(WitchesBrewAttack):
             epsilon_normalised = epsilon * (clip_values_normalised[1] - clip_values_normalised[0])
             patch_normalised = (patch - classifier.preprocessing.mean) / classifier.preprocessing.std
         else:
-            raise ValueError("classifier.preprocessing not an instance of pytorch/tensorflow")
+            clip_values_normalised = clip_values
+            epsilon_normalised = epsilon
+            patch_normalised = patch
 
         super().__init__(
-            classifier,
-            percent_poison,
-            epsilon_normalised,
-            max_trials,
-            max_epochs,
-            learning_rate_schedule,
-            batch_size,
-            clip_values_normalised,
-            verbose,
+            classifier=classifier,
+            epsilon=epsilon_normalised,
+            max_epochs=max_epochs,
+            learning_rate_schedule=learning_rate_schedule,
+            batch_size=batch_size,
+            clip_values=clip_values_normalised,
+            verbose=verbose,
         )
+        self.percent_poison = percent_poison
+        self.max_trials = max_trials
         self.indices_target = indices_target
         self.selection_strategy = selection_strategy
         self.patching_strategy = patching_strategy
         self.retraining_factor = retraining_factor
         self.model_retrain = model_retrain
         self.model_retraining_epoch = model_retraining_epoch
-        self.indices_poison: np.ndarray
         self.patch = patch_normalised
         self.class_target = class_target
         self.class_source = class_source
-        self.device_name = device_name
         self.initial_epoch = 0
         self.retrain_batch_size = retrain_batch_size
+        self._check_params()
 
     # pylint: disable=W0221
     def poison(  # type: ignore
@@ -170,13 +197,13 @@ class SleeperAgentAttack(WitchesBrewAttack):
 
         x_train_target_samples, y_train_target_samples = self._select_target_train_samples(x_train, y_train)
         if isinstance(self.substitute_classifier, PyTorchClassifier):
-            poisoner = self._poison__pytorch
-            finish_poisoning = self._finish_poison_pytorch
             initializer = self._initialize_poison_pytorch
+            poisoner = self._poison_pytorch
+            finish_poisoning = self._finish_poison_pytorch
         elif isinstance(self.substitute_classifier, TensorFlowV2Classifier):
-            poisoner = self._poison__tensorflow
-            finish_poisoning = self._finish_poison_tensorflow
             initializer = self._initialize_poison_tensorflow
+            poisoner = self._poison_tensorflow
+            finish_poisoning = self._finish_poison_tensorflow
         else:
             raise NotImplementedError("SleeperAgentAttack is currently implemented only for PyTorch and TensorFlowV2.")
 
@@ -204,7 +231,7 @@ class SleeperAgentAttack(WitchesBrewAttack):
                 )[:num_poison_samples]
             else:
                 self.indices_poison = self._select_poison_indices(
-                    self.substitute_classifier, x_train_target_samples, y_train_target_samples, num_poison_samples
+                    x_train_target_samples, y_train_target_samples, num_poison_samples
                 )
             x_poison = x_train_target_samples[self.indices_poison]
             y_poison = y_train_target_samples[self.indices_poison]
@@ -352,69 +379,72 @@ class SleeperAgentAttack(WitchesBrewAttack):
         :param num_classes: Number of classes of labels in train data.
         :param batch_size: The size of batch used for training.
         :param epochs: The number of epochs for which training need to be applied.
-        :return model, loss_fn, optimizer - trained model, loss function used to train the model and optimizer used.
+        :return model: The new model for retraining.
         """
+        model: Union[PyTorchClassifier, TensorFlowV2Classifier]
+
         if isinstance(self.substitute_classifier, PyTorchClassifier):
             # Reset Weights of the newly initialized model
-            model_pt = self.substitute_classifier.clone_for_refitting()
-            for layer in model_pt.model.children():
+            model = self.substitute_classifier.clone_for_refitting()
+            for layer in model.model.children():
                 if hasattr(layer, "reset_parameters"):
                     layer.reset_parameters()  # type: ignore
-            model_pt.fit(x_train, y_train, batch_size=batch_size, nb_epochs=epochs, verbose=1)
-            predictions = model_pt.predict(x_test)
+            model.fit(x_train, y_train, batch_size=batch_size, nb_epochs=epochs, verbose=1)
+            predictions = model.predict(x_test)
             accuracy = np.sum(np.argmax(predictions, axis=1) == np.argmax(y_test, axis=1)) / len(y_test)
             logger.info("Accuracy of retrained model : %s", accuracy * 100.0)
-            return model_pt
 
-        if isinstance(self.substitute_classifier, TensorFlowV2Classifier):
-
+        elif isinstance(self.substitute_classifier, TensorFlowV2Classifier):
             self.substitute_classifier.model.trainable = True
-            model_tf = self.substitute_classifier.clone_for_refitting()
-            model_tf.fit(x_train, y_train, batch_size=batch_size, nb_epochs=epochs, verbose=0)
-            predictions = model_tf.predict(x_test)
+            model = self.substitute_classifier.clone_for_refitting()
+            model.fit(x_train, y_train, batch_size=batch_size, nb_epochs=epochs, verbose=0)
+            predictions = model.predict(x_test)
             accuracy = np.sum(np.argmax(predictions, axis=1) == np.argmax(y_test, axis=1)) / len(y_test)
             logger.info("Accuracy of retrained model : %s", accuracy * 100.0)
-            return model_tf
 
-        raise ValueError("SleeperAgentAttack is currently implemented only for PyTorch and TensorFlowV2.")
+        else:
+            raise ValueError("SleeperAgentAttack is currently implemented only for PyTorch and TensorFlowV2.")
+
+        return model
 
     # This function is responsible for returning indices of poison images with maximum gradient norm
-    def _select_poison_indices(
-        self, classifier: "CLASSIFIER_NEURALNETWORK_TYPE", x_samples: np.ndarray, y_samples: np.ndarray, num_poison: int
-    ) -> np.ndarray:
+    def _select_poison_indices(self, x_samples: np.ndarray, y_samples: np.ndarray, num_poison: int) -> np.ndarray:
         """
         Select indices of poisoned samples
 
-        :classifier: Substitute Model.
         :x_samples: Samples of poison. [x_samples are normalised]
         :y_samples: Labels of samples of poison.
         :num_poison: Number of poisoned samples to be selected out of all x_samples.
         :return indices - Indices of samples to be poisoned.
         """
-        if isinstance(self.substitute_classifier, PyTorchClassifier):
+        classifier = self.substitute_classifier
+
+        if isinstance(classifier, PyTorchClassifier):
             import torch
 
-            device = torch.device(self.device_name)
-            grad_norms = []
+            device = classifier.device
             criterion = torch.nn.CrossEntropyLoss()
-            model = classifier.model
-            model.eval()
+            classifier.model.eval()
             differentiable_params = [p for p in classifier.model.parameters() if p.requires_grad]
+            grad_norms = []
+
             for x, y in zip(x_samples, y_samples):
                 image = torch.tensor(x, dtype=torch.float32).float().to(device)
                 label = torch.tensor(y).to(device)
-                loss_pt = criterion(model(image.unsqueeze(0)), label.unsqueeze(0))
+                loss_pt = criterion(classifier.model(image.unsqueeze(0)), label.unsqueeze(0))
                 gradients = list(torch.autograd.grad(loss_pt, differentiable_params, only_inputs=True))
                 grad_norm = torch.tensor(0, dtype=torch.float32).to(device)
                 for grad in gradients:
                     grad_norm += grad.detach().pow(2).sum()
                 grad_norms.append(grad_norm.sqrt())
-        elif isinstance(self.substitute_classifier, TensorFlowV2Classifier):
+
+        elif isinstance(classifier, TensorFlowV2Classifier):
             import tensorflow as tf
 
             model_trainable = classifier.model.trainable
             classifier.model.trainable = False
             grad_norms = []
+
             for i in range(len(x_samples) - 1):
                 image = tf.constant(x_samples[i : i + 1])
                 label = tf.constant(y_samples[i : i + 1])
@@ -429,8 +459,10 @@ class SleeperAgentAttack(WitchesBrewAttack):
                         grad_norm += tf.reduce_sum(tf.math.square(grad))
                     grad_norms.append(tf.math.sqrt(grad_norm))
             classifier.model.trainable = model_trainable
+
         else:
             raise NotImplementedError("SleeperAgentAttack is currently implemented only for PyTorch and TensorFlowV2.")
+
         indices = sorted(range(len(grad_norms)), key=lambda k: grad_norms[k])
         indices = indices[-num_poison:]
         return np.array(indices)  # this will get only indices for target class
@@ -447,13 +479,13 @@ class SleeperAgentAttack(WitchesBrewAttack):
         """
         patch_size = self.patch.shape[1]
         if self.patching_strategy == "fixed":
-            if self.estimator.channels_first:
+            if self.substitute_classifier.channels_first:
                 x_trigger[:, :, -patch_size:, -patch_size:] = self.patch
             else:
                 x_trigger[:, -patch_size:, -patch_size:, :] = self.patch
         else:
             for x in x_trigger:
-                if self.estimator.channels_first:
+                if self.substitute_classifier.channels_first:
                     x_cord = random.randrange(0, x.shape[1] - self.patch.shape[1] + 1)
                     y_cord = random.randrange(0, x.shape[2] - self.patch.shape[2] + 1)
                     x[:, x_cord : x_cord + patch_size, y_cord : y_cord + patch_size] = self.patch
@@ -463,3 +495,33 @@ class SleeperAgentAttack(WitchesBrewAttack):
                     x[x_cord : x_cord + patch_size, y_cord : y_cord + patch_size, :] = self.patch
 
         return x_trigger
+
+    def _check_params(self) -> None:
+        if not isinstance(self.learning_rate_schedule, tuple) or len(self.learning_rate_schedule) != 2:
+            raise ValueError("learning_rate_schedule must be a pair of a list of learning rates and a list of epochs")
+
+        if self.percent_poison > 1 or self.percent_poison < 0:
+            raise ValueError("percent_poison must be in [0, 1]")
+
+        if self.max_epochs < 1:
+            raise ValueError("max_epochs must be positive")
+
+        if self.max_trials < 1:
+            raise ValueError("max_trials must be positive")
+
+        if not isinstance(self.clip_values, tuple) or len(self.clip_values) != 2:
+            raise ValueError("clip_values must be a pair (min, max) of floats")
+
+        if self.epsilon <= 0:
+            raise ValueError("epsilon must be nonnegative")
+
+        if not isinstance(self.batch_size, int) or self.batch_size <= 0:
+            raise ValueError("batch_size must be a positive integer")
+
+        if (
+            isinstance(self.verbose, int)
+            and self.verbose < 0
+            or not isinstance(self.verbose, int)
+            and not isinstance(self.verbose, bool)
+        ):
+            raise ValueError("verbose must be nonnegative integer or Boolean")
