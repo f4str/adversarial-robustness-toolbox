@@ -20,7 +20,7 @@ This module implements the abstract mixin class used for gradient matching attac
 """
 from __future__ import absolute_import, division, print_function, unicode_literals
 
-from abc import ABC
+import abc
 import logging
 from typing import Any, Dict, Tuple, TYPE_CHECKING, List
 
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class GradientMatchingMixin(ABC):
+class GradientMatchingMixin(abc.ABC):
     """
     Mixin abstract base class defining functionality for gradient matching attacks.
     """
@@ -170,8 +170,8 @@ class GradientMatchingMixin(ABC):
                 poisoned_samples = self.noise_embedding(x, indices_poison)
                 d_w2_norm = _weight_grad(self.classifier, poisoned_samples, y)
                 d_w2_norm.requires_grad_(True)
-                B_score = 1 - self.cos(grad_ws_norm, d_w2_norm)  # pylint: disable=C0103
-                return B_score, poisoned_samples
+                b_score = 1 - self.cos(grad_ws_norm, d_w2_norm)  # pylint: disable=C0103
+                return b_score, poisoned_samples
 
         self.grad_ws_norm = _weight_grad(
             classifier,
@@ -366,7 +366,7 @@ class GradientMatchingMixin(ABC):
                 epoch_iterator.set_postfix(loss=sum_loss / count)
             self.lr_schedule.step()
 
-        B_sum = 0  # pylint: disable=C0103
+        b_score_sum = 0  # pylint: disable=C0103
         count = 0
         all_poisoned_samples = []
         self.backdoor_model.eval()
@@ -377,12 +377,12 @@ class GradientMatchingMixin(ABC):
             x = x.to(device)
             y = y.to(device)
             indices = indices.to(device)
-            B, poisoned_samples = self.backdoor_model(x, indices, y, self.grad_ws_norm)  # pylint: disable=C0103
+            b_score, poisoned_samples = self.backdoor_model(x, indices, y, self.grad_ws_norm)  # pylint: disable=C0103
             all_poisoned_samples.append(poisoned_samples.detach().cpu().numpy())
-            B_sum += B.detach().cpu().numpy()  # pylint: disable=C0103
+            b_score_sum += b_score.detach().cpu().numpy()  # pylint: disable=C0103
             count += 1
 
-        return np.concatenate(all_poisoned_samples, axis=0), B_sum / count
+        return np.concatenate(all_poisoned_samples, axis=0), b_score_sum / count
 
     def _poison_tensorflow(self, x_poison: np.ndarray, y_poison: np.ndarray) -> Tuple[Any, Any]:
         """
