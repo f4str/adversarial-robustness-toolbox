@@ -22,6 +22,7 @@ import logging
 from typing import Any, List, Dict, Optional, Tuple, Union, TYPE_CHECKING
 
 import numpy as np
+import six
 
 from art.estimators.object_detection.object_detector import ObjectDetectorMixin
 from art.estimators.object_detection.utils import cast_inputs_to_pt
@@ -119,6 +120,13 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
         self._optimizer = optimizer
         self._attack_losses = attack_losses
 
+        # Create model wrapper
+        self._model = self._make_model_wrapper(model)
+        self._model.to(self._device)
+
+        # Get the internal layers
+        self._layer_names: List[str] = self._model.get_layers  # type: ignore
+
         # Parameters used for subclasses
         self.weight_dict: Optional[Dict[str, float]] = None
         self.criterion: Optional[torch.nn.Module] = None
@@ -132,10 +140,6 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
         if self.postprocessing_defences is not None:
             raise ValueError("This estimator does not support `postprocessing_defences`.")
 
-        self._model: torch.nn.Module
-        self._model.to(self._device)
-        self._model.eval()
-
     @property
     def native_label_is_pytorch_format(self) -> bool:
         """
@@ -145,7 +149,7 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
 
     @property
     def model(self) -> "torch.nn.Module":
-        return self._model
+        return self._model._model
 
     @property
     def input_shape(self) -> Tuple[int, ...]:
@@ -182,6 +186,122 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
         :return: Current used device.
         """
         return self._device
+
+    def _make_model_wrapper(self, model: "torch.nn.Module") -> "torch.nn.Module":
+        # Create an internal class that acts like a model wrapper extending torch.nn.Module
+        import torch
+
+        input_for_hook = torch.rand(self.input_shape)
+        input_for_hook = torch.unsqueeze(input_for_hook, dim=0)
+
+        if not self.channels_first:
+            input_for_hook = torch.permute(input_for_hook, (0, 3, 1, 2))
+
+        # Define model wrapping class only if not defined before
+        if not hasattr(self, "_model_wrapper"):
+
+            class ModelWrapper(torch.nn.Module):
+                """
+                This is a wrapper for the input model.
+                """
+
+                def __init__(self, model: torch.nn.Module):
+                    """
+                    Initialization by storing the input model.
+
+                    :param model: PyTorch model. The forward function of the model must return the logit output.
+                    """
+                    super().__init__()
+                    self._model = model
+
+                # pylint: disable=W0221
+                # disable pylint because of API requirements for function
+                def forward(self, x):
+                    """
+                    This is where we get outputs from the input model.
+
+                    :param x: Input data.
+                    :type x: `torch.Tensor`
+                    :return: a list of output layers, where the last 2 layers are logit and final outputs.
+                    :rtype: `list`
+                    """
+                    # pylint: disable=W0212
+                    # disable pylint because access to _model required
+
+                    result = []
+
+                    if isinstance(self._model, torch.nn.Module):
+                        x = self._model.forward(x)
+                        result.append(x)
+
+                    else:  # pragma: no cover
+                        raise TypeError("The input model must inherit from `nn.Module`.")
+
+                    return result
+
+                @property
+                def get_layers(self) -> List[str]:
+                    """
+                    Return the hidden layers in the model, if applicable.
+
+                    :return: The hidden layers in the model, input and output layers excluded.
+
+                    .. warning:: `get_layers` tries to infer the internal structure of the model.
+                                    This feature comes with no guarantees on the correctness of the result.
+                                    The intended order of the layers tries to match their order in the model, but this
+                                    is not guaranteed either.
+                    """
+
+                    result_dict = {}
+
+                    modules = []
+
+                    # pylint: disable=W0613
+                    def forward_hook(input_module, hook_input, hook_output):
+                        logger.info("input_module is %s with id %i", input_module, id(input_module))
+                        modules.append(id(input_module))
+
+                    handles = []
+
+                    for name, module in self._model.named_modules():
+                        logger.info(
+                            "found %s with type %s and id %i and name %s with submods %i ",
+                            module,
+                            type(module),
+                            id(module),
+                            name,
+                            len(list(module.named_modules())),
+                        )
+
+                        if name != "" and len(list(module.named_modules())) == 1:
+                            handles.append(module.register_forward_hook(forward_hook))
+                            result_dict[id(module)] = name
+
+                    logger.info("mapping from id to name is %s", result_dict)
+
+                    logger.info("------ Finished Registering Hooks------")
+                    model(input_for_hook)  # hooks are fired sequentially from model input to the output
+
+                    logger.info("------ Finished Fire Hooks------")
+
+                    # Remove the hooks
+                    for hook in handles:
+                        hook.remove()
+
+                    logger.info("new result is: ")
+                    name_order = []
+                    for module in modules:
+                        name_order.append(result_dict[module])
+
+                    logger.info(name_order)
+
+                    return name_order
+
+            # Set newly created class as private attribute
+            self._model_wrapper = ModelWrapper  # type: ignore
+
+        # Use model wrapping class to wrap the PyTorch model received as argument
+        return self._model_wrapper(model)
 
     def _preprocess_and_convert_inputs(
         self,
@@ -296,7 +416,7 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
                   - labels [N]: the labels for each image.
         :return: Loss components and gradients of the input `x`.
         """
-        self._model.train()
+        self.model.train()
 
         self.set_dropout(False)
         self.set_multihead_attention(False)
@@ -315,9 +435,9 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
             x_preprocessed.retain_grad()
 
         if self.criterion is None:
-            loss_components = self._model(x_preprocessed, y_preprocessed)
+            loss_components = self.model(x_preprocessed, y_preprocessed)
         else:
-            outputs = self._model(x_preprocessed)
+            outputs = self.model(x_preprocessed)
             loss_components = self.criterion(outputs, y_preprocessed)
 
         return loss_components, x_preprocessed
@@ -351,7 +471,7 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
             )
 
         # Clean gradients
-        self._model.zero_grad()
+        self.model.zero_grad()
 
         # Compute gradients
         loss.backward(retain_graph=True)  # type: ignore
@@ -397,7 +517,7 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
         from torch.utils.data import TensorDataset, DataLoader
 
         # Set model to evaluation mode
-        self._model.eval()
+        self.model.eval()
 
         # Apply preprocessing and convert to tensors
         x_preprocessed, _ = self._preprocess_and_convert_inputs(x=x, y=None, fit=False, no_grad=True)
@@ -413,7 +533,7 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
 
             # Run prediction
             with torch.no_grad():
-                outputs = self._model(x_batch)
+                outputs = self.model(x_batch)
 
             predictions_x1y1x2y2 = self._translate_predictions(outputs)
             predictions.extend(predictions_x1y1x2y2)
@@ -452,7 +572,7 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
         from torch.utils.data import Dataset, DataLoader
 
         # Set model to train mode
-        self._model.train()
+        self.model.train()
 
         if self._optimizer is None:  # pragma: no cover
             raise ValueError("An optimizer is needed to train the model, but none for provided.")
@@ -498,9 +618,9 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
 
                 # Get the loss components
                 if self.criterion is None:
-                    loss_components = self._model(x_batch, y_batch)
+                    loss_components = self.model(x_batch, y_batch)
                 else:
-                    outputs = self._model(x_batch)
+                    outputs = self.model(x_batch)
                     loss_components = self.criterion(outputs, y_batch)
 
                 # Form the loss tensor
@@ -522,10 +642,96 @@ class PyTorchObjectDetector(ObjectDetectorMixin, PyTorchEstimator):
             if scheduler is not None:
                 scheduler.step()
 
-    def get_activations(
-        self, x: np.ndarray, layer: Union[int, str], batch_size: int, framework: bool = False
-    ) -> np.ndarray:
-        raise NotImplementedError
+    def get_activations(  # type: ignore
+        self,
+        x: Union[np.ndarray, "torch.Tensor"],
+        layer: Optional[Union[int, str]] = None,
+        batch_size: int = 128,
+        framework: bool = False,
+    ) -> Union[np.ndarray, "torch.Tensor"]:
+        """
+        Return the output of the specified layer for input `x`. `layer` is specified by layer index (between 0 and
+        `nb_layers - 1`) or by name. The number of layers can be determined by counting the results returned by
+        calling `layer_names`.
+
+        :param x: Input for computing the activations.
+        :param layer: Layer for computing the activations
+        :param batch_size: Size of batches.
+        :param framework: If true, return the intermediate tensor representation of the activation.
+        :return: The output of `layer`, where the first dimension is the batch size corresponding to `x`.
+        """
+        import torch
+
+        self._model.eval()
+
+        # Apply defences
+        if framework:
+            no_grad = False
+        else:
+            no_grad = True
+        x_preprocessed, _ = self._apply_preprocessing(x=x, y=None, fit=False, no_grad=no_grad)
+
+        # Get index of the extracted layer
+        if isinstance(layer, six.string_types):
+            if layer not in self._layer_names:  # pragma: no cover
+                raise ValueError(f"Layer name {layer} not supported")
+            layer_index = self._layer_names.index(layer)
+
+        elif isinstance(layer, int):
+            layer_index = layer
+
+        else:  # pragma: no cover
+            raise TypeError("Layer must be of type str or int")
+
+        def get_feature(name):
+            # the hook signature
+            def hook(model, input, output):  # pylint: disable=W0622,W0613
+                self._features[name] = output
+
+            return hook
+
+        if not hasattr(self, "_features"):
+            self._features: Dict[str, torch.Tensor] = {}
+            # register forward hooks on the layers of choice
+        handles = []
+
+        lname = self._layer_names[layer_index]
+
+        if layer not in self._features:
+            for name, module in self.model.named_modules():
+                if name == lname and len(list(module.named_modules())) == 1:
+                    handles.append(module.register_forward_hook(get_feature(name)))
+
+        if framework:
+            if isinstance(x_preprocessed, torch.Tensor):
+                self._model(x_preprocessed)
+                return self._features[self._layer_names[layer_index]][0]
+            input_tensor = torch.from_numpy(x_preprocessed)
+            self._model(input_tensor.to(self._device))
+            return self._features[self._layer_names[layer_index]][0]  # pylint: disable=W0212
+
+        # Run prediction with batch processing
+        results = []
+        num_batch = int(np.ceil(len(x_preprocessed) / float(batch_size)))
+
+        for m in range(num_batch):
+            # Batch indexes
+            begin, end = (
+                m * batch_size,
+                min((m + 1) * batch_size, x_preprocessed.shape[0]),
+            )
+
+            # Run prediction for the current batch
+            self._model(torch.from_numpy(x_preprocessed[begin:end]).to(self._device))
+            layer_output = self._features[self._layer_names[layer_index]]  # pylint: disable=W0212
+
+            if isinstance(layer_output, tuple):
+                results.append(layer_output[0].detach().cpu().numpy())
+            else:
+                results.append(layer_output.detach().cpu().numpy())
+
+        results_array = np.concatenate(results)
+        return results_array
 
     def compute_losses(
         self, x: Union[np.ndarray, "torch.Tensor"], y: List[Dict[str, Union[np.ndarray, "torch.Tensor"]]]
